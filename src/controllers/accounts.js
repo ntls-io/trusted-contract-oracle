@@ -1,6 +1,6 @@
 import xrpl from 'xrpl';
 import Account from '../models/accounts.js';
-import Transaction from '../models/transactions.js';
+import Transaction, { transactionTypes } from '../models/transactions.js';
 
 /**
  * Sends a message to the enclave to create an account
@@ -24,7 +24,9 @@ export async function getTransactions(res, parameters) {
  * Gets transactions from escrow account
  */
 export async function checkEscrowAccounts(res) {
-	const account = await Account.findOne({ address: process.env.ESCROW_ACCOUNT });
+	const account = await Account.findOne({
+		address: process.env.ESCROW_ACCOUNT,
+	});
 
 	const client = new xrpl.Client(process.env.RIPPLE_SERVER);
 
@@ -58,23 +60,58 @@ export async function checkEscrowAccounts(res) {
 
 		processTransactions(account, result);
 
+		sendTransactionsToEnclave();
+
 		res.status(200).json({ success: true, data: response.result });
 	} catch (err) {
 		res.status(200).json({ success: false, error: err.message });
 	}
 }
 
+/** Parses and saves the XRPL transactions to the DB  */
 async function processTransactions(account, result) {
-	// console.log(result.transactions[0]);
+	const dbTransactions = [];
 
-	const transactions = [];
+	for (let i = 0; i < result.transactions.length; i++) {
+		let transaction = result.transactions[i];
 
-	for (const transaction of result.transactions) {
-		transactions.push({ hash: transaction.tx.hash, account: account.address });
+		if (transaction.tx.TransactionType !== transactionTypes.payment) {
+			continue;
+		}
+
+		console.log(transaction);
+
+		let dbTransaction = {
+			hash: transaction.tx.hash,
+			account: account.address,
+			sender: transaction.tx.Account,
+			type: transactionTypes.payment,
+			currency:
+				typeof transaction.tx.Amount === 'string'
+					? 'XRP'
+					: transaction.tx.Amount.currency,
+			amount:
+				typeof transaction.tx.Amount === 'string'
+					? transaction.tx.Amount
+					: transaction.tx.Amount.value,
+		};
+
+		const memoDetails = getMemoDetails(transaction);
+
+		if (memoDetails) {
+			dbTransaction.recepient = memoDetails.recepient;
+			dbTransaction.price = memoDetails.price;
+		}
+
+		dbTransactions.push(dbTransaction);
 	}
 
+	await saveTransactions(dbTransactions);
+}
+
+async function saveTransactions(dbTransactions) {
 	try {
-		await Transaction.insertMany(transactions, {
+		await Transaction.insertMany(dbTransactions, {
 			ordered: false,
 		});
 	} catch (err) {
@@ -86,4 +123,39 @@ async function processTransactions(account, result) {
 				throw 'Unknown error during bulk insert';
 		}
 	}
+}
+
+/**
+ * Returns:
+ * asset: Asset to be sent
+ * recepient: Intended recepient - if deal conditions/price are met
+ * price: Price of deal
+ *
+ * @param {*} transaction
+ */
+function getMemoDetails(transaction) {
+	if (!transaction.tx.Memos) {
+		return null;
+	}
+
+	let memos = transaction.tx.Memos;
+	let memo = xrpl.convertHexToString(memos[0].Memo.MemoData);
+
+	let memoDetails = memo.split(' ');
+	return {
+		asset: memoDetails[0],
+		recepient: memoDetails[1],
+		price: memoDetails[2],
+	};
+}
+
+/** Finds matching pairs of sender, recepient, price (condition for exchange)
+ * and send to the Enclave */
+async function sendTransactionsToEnclave() {
+	const transactions = await Transaction.find({
+		$and: [{ sender: { $ne: null } }, { recepient: { $ne: null } }],
+	});
+
+	console.log('** enclave transactions');
+	console.log(transactions);
 }
