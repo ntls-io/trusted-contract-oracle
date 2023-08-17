@@ -1,6 +1,9 @@
 import xrpl from 'xrpl';
 import Account from '../models/accounts.js';
 import Transaction, { transactionTypes } from '../models/transactions.js';
+import axios from 'axios';
+import { createUnsignedTransaction } from '../../services/payments/escrow_functions.js';
+import { signTransactionAndSubmit } from '../../services/payments/escrow_functions.js';
 
 /**
  * Sends a message to the enclave to create an account
@@ -60,7 +63,7 @@ export async function checkEscrowAccounts(res) {
 
 		processTransactions(account, result);
 
-		sendTransactionsToEnclave();
+		settleEscrowTransactions();
 
 		res.status(200).json({ success: true, data: response.result });
 	} catch (err) {
@@ -79,7 +82,7 @@ async function processTransactions(account, result) {
 			continue;
 		}
 
-		console.log(transaction);
+		// console.log(transaction);
 
 		let dbTransaction = {
 			hash: transaction.tx.hash,
@@ -120,6 +123,7 @@ async function saveTransactions(dbTransactions) {
 				console.log('Duplicate key error during bulk insert ');
 				break;
 			default:
+				console.log(err);
 				throw 'Unknown error during bulk insert';
 		}
 	}
@@ -151,11 +155,140 @@ function getMemoDetails(transaction) {
 
 /** Finds matching pairs of sender, recepient, price (condition for exchange)
  * and send to the Enclave */
-async function sendTransactionsToEnclave() {
-	const transactions = await Transaction.find({
-		$and: [{ sender: { $ne: null } }, { recepient: { $ne: null } }],
-	});
+async function settleEscrowTransactions() {
+	// get the token seller and the corresponding settlement transactions from the buyer
+	const transactions = await Transaction.aggregate([
+		{
+			$match: {
+				$and: [
+					{ sender: { $ne: null } },
+					{ currency: { $ne: 'XRP' } },
+					{ settled: false },
+				],
+			},
+		},
+		{
+			$lookup: {
+				from: 'transactions',
+				localField: 'recepient',
+				foreignField: 'sender',
+				as: 'settlement',
+			},
+		},
+	]);
 
-	console.log('** enclave transactions');
-	console.log(transactions);
+	for (let i = 0; i < transactions.length; i++) {
+		let enclaveTransactionData = createEnclaveTransactionData(transactions[i]);
+		console.log('** enclave txns');
+		console.log(enclaveTransactionData);
+		let passed = await checkEnclaveTransactions(enclaveTransactionData);
+		if (true) {
+			// let settled = await processLedgerTransactions(transactions[i]);
+		}
+	}
+}
+
+/**
+ * Creates the format enclave expects
+ * @param {*} sellerTxn
+ * @returns
+ */
+function createEnclaveTransactionData(sellerTxn) {
+	let buyerTxn = sellerTxn.settlement[0];
+
+	let sender = 'Sammy2'; //(Math.floor(Math.random() * 1000000) + 1).toString();
+	let receiver = 'Jane2'; //(Math.floor(Math.random() * 1000000) + 1).toString();
+
+	let sellerTransaction = {
+		transaction: {
+			transaction_id: sellerTxn.hash,
+			// transaction_id: 'AB1234',
+			sender: sellerTxn.sender,
+			// sender: sender,
+			recipient: sellerTxn.recepient,
+			// recipient: receiver,
+			token_amount: sellerTxn.amount,
+		},
+		agreed_token_amount: sellerTxn.amount,
+		agreed_trade_price: sellerTxn.price,
+	};
+
+	let buyerTransaction = {
+		transaction: {
+			transaction_id: buyerTxn.hash,
+			// transaction_id: 'AB1235',
+			sender: buyerTxn.sender,
+			// sender: receiver,
+			recipient: buyerTxn.recepient,
+			// recipient: sender,
+			payment_amount: Number(xrpl.dropsToXrp(buyerTxn.amount)), // convert to XRP
+		},
+		agreed_token_amount: sellerTxn.amount,
+		agreed_trade_price: sellerTxn.price,
+	};
+
+	return { sellerTxnData: sellerTransaction, buyerTxnData: buyerTransaction };
+}
+
+async function checkEnclaveTransactions(enclaveTransactionData) {
+	let assetCheckResult;
+	let paymentCheckResult;
+	try {
+		assetCheckResult = await axios.post(
+			'https://trusted-contract-execution-enclave.ntls.io/check-asset-transaction',
+			enclaveTransactionData.sellerTxnData
+		);
+	} catch (error) {
+		console.log('error sending seller transaction');
+		console.log(error);
+		return false;
+	}
+
+	console.log('** asset check');
+	console.log(assetCheckResult.data);
+
+	try {
+		paymentCheckResult = await axios.post(
+			'https://trusted-contract-execution-enclave.ntls.io/check-payment-transaction',
+			enclaveTransactionData.buyerTxnData
+		);
+	} catch (error) {
+		console.log('error sending buyer transaction');
+		console.log(error);
+		return false;
+	}
+
+	console.log('** payment check');
+	console.log(paymentCheckResult.data);
+	return true;
+}
+
+async function processLedgerTransactions(sellerTxnData) {
+	let buyerTxnData = sellerTxnData.settlement[0];
+
+	let sellerUnsignedTransaction = await createUnsignedTransaction(
+		sellerTxnData.recepient,
+		sellerTxnData.currency,
+		sellerTxnData.amount
+	);
+
+	let buyerUnsignedTransaction = await createUnsignedTransaction(
+		buyerTxnData.recepient,
+		buyerTxnData.currency,
+		xrpl.dropsToXrp(buyerTxnData.amount)
+	);
+
+	let settleSellerTxnResult = await signTransactionAndSubmit(
+		sellerUnsignedTransaction
+	);
+
+	let settleBuyerTxnResult = await signTransactionAndSubmit(
+		buyerUnsignedTransaction
+	);
+
+	console.log('** settled seller result');
+	console.log(settleSellerTxnResult);
+
+	console.log('** settled buyer result');
+	console.log(settleBuyerTxnResult);
 }
