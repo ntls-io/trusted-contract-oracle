@@ -5,7 +5,7 @@ export const transactionTypes = {
 	payment: 'Payment',
 };
 
-export const accountSchema = new Schema({
+export const transactionSchema = new Schema({
 	hash: {
 		type: String,
 		required: true,
@@ -15,17 +15,21 @@ export const accountSchema = new Schema({
 		type: String,
 		required: true,
 	},
+	settled: {
+		type: Boolean,
+		default: false,
+	},
 	account: { type: String, ref: 'Account' },
 	sender: String,
 	recepient: String,
-	amount: String,
+	amount: Number, // saved as XRP not drops
 	currency: String,
-	price: String,
+	price: Number,
 });
 
 const Transaction = mongoose.model(
 	'Transaction',
-	accountSchema,
+	transactionSchema,
 	'transactions'
 );
 

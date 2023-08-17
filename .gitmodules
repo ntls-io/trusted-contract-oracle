@@ -1,0 +1,3 @@
+[submodule "services/payments"]
+	path = services/payments
+	url = https://github.com/ntls-io/nautilus-wallet-recurring-payment.git
