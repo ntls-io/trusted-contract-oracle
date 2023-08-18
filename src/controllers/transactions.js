@@ -120,6 +120,8 @@ export async function settleEscrowTransactions() {
 		},
 	]);
 
+	let settlementResult = { success: false, settled: [] };
+
 	for (let i = 0; i < transactions.length; i++) {
 		// continue if there is a corresponding settlement
 		if (!transactions[i].settlement[0]) {
@@ -142,8 +144,13 @@ export async function settleEscrowTransactions() {
 			continue;
 		}
 
+		settlementResult.success = true;
+		settlementResult.settled.push(transactions[i]);
+
 		await updateDBTransactions(enclaveTransactionData);
 	}
+
+	return settlementResult;
 }
 
 /**

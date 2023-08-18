@@ -63,9 +63,9 @@ export async function checkEscrowAccounts(res) {
 
 		processTransactions(account, result);
 
-		settleEscrowTransactions();
+		let settlementResult = await settleEscrowTransactions();
 
-		res.status(200).json({ success: true, data: response.result });
+		res.status(200).json({ success: true, data: settlementResult });
 	} catch (err) {
 		res.status(200).json({ success: false, error: err.message });
 	}
