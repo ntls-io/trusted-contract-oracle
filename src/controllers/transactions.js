@@ -100,35 +100,37 @@ function getMemoDetails(transaction) {
  * and send to the Enclave */
 export async function settleEscrowTransactions() {
 	// get the token seller and the corresponding settlement transactions from the buyer
-	const transactions = await Transaction.aggregate([
-		{
-			$match: {
-				$and: [
-					{ sender: { $ne: null } },
-					{ currency: { $ne: 'XRP' } },
-					{ settled: false },
-				],
-			},
-		},
-		{
-			$lookup: {
-				from: 'transactions',
-				localField: 'recepient',
-				foreignField: 'sender',
-				as: 'settlement',
-			},
-		},
-	]);
+	const sellerTransactions = await Transaction.find({
+		$and: [
+			{ sender: { $ne: null } },
+			{ recepient: { $ne: null } },
+			{ currency: { $ne: 'XRP' } },
+			{ settled: false },
+		],
+	});
 
 	let settlementResult = { success: false, settled: [] };
 
-	for (let i = 0; i < transactions.length; i++) {
-		// continue if there is a corresponding settlement
-		if (!transactions[i].settlement[0]) {
+	for (let i = 0; i < sellerTransactions.length; i++) {
+		// continue if there is no corresponding settlement
+		const sellerTransaction = sellerTransactions[i];
+		const buyerTransaction = await Transaction.findOne({
+			$and: [
+				{ sender: sellerTransaction.recepient },
+				{ recepient: sellerTransaction.sender },
+				{ currency: 'XRP' },
+				{ settled: false },
+			],
+		});
+
+		if (!buyerTransaction) {
 			continue;
 		}
 
-		let enclaveTransactionData = createEnclaveTransactionData(transactions[i]);
+		let enclaveTransactionData = createEnclaveTransactionData(
+			sellerTransaction,
+			buyerTransaction
+		);
 
 		// console.log('** enclave txns');
 		// console.log(enclaveTransactionData);
@@ -145,7 +147,7 @@ export async function settleEscrowTransactions() {
 		}
 
 		settlementResult.success = true;
-		settlementResult.settled.push(transactions[i]);
+		settlementResult.settled.push(sellerTransaction);
 
 		await updateDBTransactions(enclaveTransactionData);
 	}
@@ -158,9 +160,7 @@ export async function settleEscrowTransactions() {
  * @param {*} sellerTxn
  * @returns
  */
-function createEnclaveTransactionData(sellerTxn) {
-	let buyerTxn = sellerTxn.settlement[0];
-
+function createEnclaveTransactionData(sellerTxn, buyerTxn) {
 	let sellerTransaction = {
 		transaction: {
 			transaction_id: sellerTxn.hash,
@@ -275,7 +275,6 @@ async function submitLedgerTransactions(enclaveResult) {
 async function updateDBTransactions(enclaveData) {
 	let sellerTxnData = enclaveData.sellerTxnData.transaction;
 	let buyerTxnData = enclaveData.buyerTxnData.transaction;
-
 	await Transaction.findOneAndUpdate(
 		{ hash: sellerTxnData.transaction_id },
 		{ settled: true }

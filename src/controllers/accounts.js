@@ -61,7 +61,7 @@ export async function checkEscrowAccounts(res) {
 			await account.save();
 		}
 
-		processTransactions(account, result);
+		await processTransactions(account, result);
 
 		let settlementResult = await settleEscrowTransactions();
 
